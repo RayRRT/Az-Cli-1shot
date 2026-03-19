@@ -489,7 +489,9 @@ foreach ($sn in $report_data.Keys) {
             $upn = $u.userPrincipalName
             $hasRole = $rd["Role Assignments"].data | Where-Object { "$($_.principalName)" -eq "$upn" }
             if ($hasRole) {
-                Add-Finding -severity "MEDIUM" -title "Disabled user has active role assignments" -desc "$upn is disabled but still has role: $($hasRole[0].roleDefinitionName)" -resource $upn -sub $sn
+                $hasRoleFirst = @($hasRole)[0]
+                $hasRoleName  = $hasRoleFirst.roleDefinitionName
+                Add-Finding -severity "MEDIUM" -title "Disabled user has active role assignments" -desc "$upn is disabled but still has role: $hasRoleName" -resource $upn -sub $sn
             }
         }
     }
