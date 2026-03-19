@@ -1,9 +1,17 @@
 # ============================================================
 #  Azure Enumeration Script  -  Single file version
-#  Usage: .\azure_enum.ps1
+#  Usage: .\azure_enum.ps1 [-SkipSlowAD] [-NoSPAll]
 #  Requires: az CLI (native) OR python -m azure.cli (already logged in)
 #  Output:   <output_dir>\report.html  +  graph.html
+#
+#  Flags:
+#    -SkipSlowAD   Skip SP and App list entirely (fastest)
+#    -NoSPAll      Run SP/App list with --all (includes Microsoft SPs, slower)
 # ============================================================
+param(
+    [switch]$SkipSlowAD,
+    [switch]$NoSPAll
+)
 
 # Auto-detect: use native az if available, otherwise fall back to python module
 if (Get-Command az -ErrorAction SilentlyContinue) {
