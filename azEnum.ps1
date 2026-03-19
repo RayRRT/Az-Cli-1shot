@@ -30,32 +30,10 @@ $global:gNodeIds = @{}
 
 function Run-Az-Json {
     param([string]$cmd)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    # Show a spinner with elapsed time while waiting for slow commands
-    $job = Start-Job -ScriptBlock {
-        param($az, $cmd)
-        try {
-            $r = (Invoke-Expression "$az $cmd --output json") 2>&1 |
-                 Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-            if ($r) { return $r }
-        } catch {}
-        return $null
-    } -ArgumentList $script:az, $cmd
-
-    $spinner = @('|','/','-','\')
-    $i = 0
-    while ($job.State -eq 'Running') {
-        $elapsed = $sw.Elapsed.ToString("mm\:ss")
-        Write-Host "`r    $($spinner[$i % 4]) running... ($elapsed elapsed)" -NoNewline -ForegroundColor DarkGray
-        Start-Sleep -Milliseconds 500
-        $i++
-    }
-    Write-Host "`r    done in $($sw.Elapsed.ToString('mm\:ss'))              " -ForegroundColor DarkGray
-
     try {
-        $raw = Receive-Job $job
-        Remove-Job $job
-        if ($raw) { return ($raw | ConvertFrom-Json) }
+        $r = (Invoke-Expression "$script:az $cmd --output json") 2>&1 |
+             Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if ($r) { return ($r | ConvertFrom-Json) }
     } catch {}
     return @()
 }
