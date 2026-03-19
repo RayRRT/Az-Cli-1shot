@@ -365,6 +365,182 @@ foreach ($sub in $subs) {
     }
 }
 
+
+# ============================================================
+# FINDINGS ENGINE
+# ============================================================
+Write-Host "[+] Analyzing findings..." -ForegroundColor Cyan
+
+$findings = [System.Collections.Generic.List[hashtable]]::new()
+
+function Add-Finding {
+    param([string]$severity,[string]$title,[string]$desc,[string]$resource,[string]$sub)
+    $script:findings.Add(@{ severity=$severity; title=$title; desc=$desc; resource=$resource; sub=$sub })
+}
+
+foreach ($sn in $report_data.Keys) {
+    $rd = $report_data[$sn]
+
+    # --- HIGH: Owner/Contributor assigned to guest or external users
+    if ($rd.ContainsKey("Role Assignments")) {
+        foreach ($r in $rd["Role Assignments"].data) {
+            $rname = "$($r.roleDefinitionName)"
+            $pname = "$($r.principalName)"
+            $ptype = "$($r.principalType)"
+            if ($rname -match "Owner|Contributor" -and $ptype -match "User" -and $pname -match "#EXT#|guest") {
+                Add-Finding -severity "HIGH" -title "Privileged role assigned to external/guest user" -desc "$rname assigned to $pname" -resource $r.scope -sub $sn
+            }
+            # Owner assigned to SP
+            if ($rname -eq "Owner" -and $ptype -match "ServicePrincipal") {
+                Add-Finding -severity "HIGH" -title "Owner role assigned to Service Principal" -desc "$rname assigned to SP: $pname" -resource $r.scope -sub $sn
+            }
+            # Contributor at subscription scope
+            if ($rname -match "Owner|Contributor" -and "$($r.scope)" -match "^/subscriptions/[^/]+$") {
+                Add-Finding -severity "HIGH" -title "Subscription-level privileged role" -desc "$rname at subscription scope assigned to $pname ($ptype)" -resource $r.scope -sub $sn
+            }
+        }
+    }
+
+    # --- HIGH: Storage account with public blob access enabled
+    if ($rd.ContainsKey("Storage Accounts")) {
+        foreach ($sa in $rd["Storage Accounts"].data) {
+            if ("$($sa.allowBlobPublicAccess)" -eq "True" -or "$($sa.allowBlobPublicAccess)" -eq "true") {
+                Add-Finding -severity "HIGH" -title "Storage account allows public blob access" -desc "allowBlobPublicAccess=true on $($sa.name)" -resource $sa.name -sub $sn
+            }
+            if ("$($sa.minimumTlsVersion)" -match "TLS1_0|TLS1_1" -or "$($sa.minimumTlsVersion)" -eq "") {
+                Add-Finding -severity "MEDIUM" -title "Storage account uses weak TLS" -desc "minimumTlsVersion=$($sa.minimumTlsVersion) on $($sa.name)" -resource $sa.name -sub $sn
+            }
+            if ("$($sa.enableHttpsTrafficOnly)" -eq "False" -or "$($sa.enableHttpsTrafficOnly)" -eq "false") {
+                Add-Finding -severity "MEDIUM" -title "Storage account allows HTTP traffic" -desc "enableHttpsTrafficOnly=false on $($sa.name)" -resource $sa.name -sub $sn
+            }
+        }
+    }
+
+    # --- HIGH: Storage containers with public access
+    if ($rd.ContainsKey("Storage Containers")) {
+        foreach ($c in $rd["Storage Containers"].data) {
+            if ("$($c.publicAccess)" -ne "" -and "$($c.publicAccess)" -ne "None" -and "$($c.publicAccess)" -ne "-") {
+                Add-Finding -severity "HIGH" -title "Storage container is publicly accessible" -desc "Container $($c.name) in $($c.storageAccount) has publicAccess=$($c.publicAccess)" -resource "$($c.storageAccount)/$($c.name)" -sub $sn
+            }
+        }
+    }
+
+    # --- HIGH: NSG rules open to internet
+    if ($rd.ContainsKey("NSG Rules")) {
+        foreach ($r in $rd["NSG Rules"].data) {
+            if ("$($r.access)" -eq "Allow" -and "$($r.direction)" -eq "Inbound" -and
+                ("$($r.sourceAddressPrefix)" -eq "*" -or "$($r.sourceAddressPrefix)" -eq "0.0.0.0/0" -or "$($r.sourceAddressPrefix)" -eq "Internet")) {
+                $port = "$($r.destinationPortRange)"
+                $sev  = if ($port -match "^(22|3389|1433|5432|3306|27017|6379|8080|8443)$") { "HIGH" } else { "MEDIUM" }
+                Add-Finding -severity $sev -title "NSG rule allows inbound from any IP" -desc "Rule $($r.name) in $($r.nsgName): Allow inbound $($r.protocol) port $port from ANY" -resource $r.nsgName -sub $sn
+            }
+        }
+    }
+
+    # --- HIGH: SQL firewall open to internet
+    if ($rd.ContainsKey("SQL Firewall Rules")) {
+        foreach ($r in $rd["SQL Firewall Rules"].data) {
+            if ("$($r.startIpAddress)" -eq "0.0.0.0" -and "$($r.endIpAddress)" -eq "255.255.255.255") {
+                Add-Finding -severity "HIGH" -title "SQL Server firewall open to internet" -desc "Rule $($r.name) on $($r.serverName): 0.0.0.0 - 255.255.255.255" -resource $r.serverName -sub $sn
+            }
+            if ("$($r.startIpAddress)" -eq "0.0.0.0" -and "$($r.endIpAddress)" -eq "0.0.0.0") {
+                Add-Finding -severity "MEDIUM" -title "SQL Server allows Azure services (Allow Azure IPs)" -desc "Rule $($r.name) on $($r.serverName) allows all Azure services" -resource $r.serverName -sub $sn
+            }
+        }
+    }
+
+    # --- HIGH: Web apps with credentials in appsettings
+    if ($rd.ContainsKey("WebApp AppSettings")) {
+        foreach ($s in $rd["WebApp AppSettings"].data) {
+            if ("$($s.name)" -match "password|secret|key|token|pwd|conn|connectionstring|apikey" -and "$($s.value)" -ne "" -and "$($s.value)" -ne "-") {
+                Add-Finding -severity "HIGH" -title "Potential credential in WebApp AppSettings" -desc "Key '$($s.name)' = '$($s.value)' in app $($s.appName)" -resource $s.appName -sub $sn
+            }
+        }
+    }
+    if ($rd.ContainsKey("Function AppSettings")) {
+        foreach ($s in $rd["Function AppSettings"].data) {
+            if ("$($s.name)" -match "password|secret|key|token|pwd|conn|connectionstring|apikey" -and "$($s.value)" -ne "" -and "$($s.value)" -ne "-") {
+                Add-Finding -severity "HIGH" -title "Potential credential in Function AppSettings" -desc "Key '$($s.name)' = '$($s.value)' in func $($s.funcName)" -resource $s.funcName -sub $sn
+            }
+        }
+    }
+
+    # --- MEDIUM: Web apps without HTTPS enforced
+    if ($rd.ContainsKey("Web Apps")) {
+        foreach ($app in $rd["Web Apps"].data) {
+            if ("$($app.httpsOnly)" -eq "False" -or "$($app.httpsOnly)" -eq "false") {
+                Add-Finding -severity "MEDIUM" -title "Web App does not enforce HTTPS" -desc "$($app.name) has httpsOnly=false" -resource $app.name -sub $sn
+            }
+        }
+    }
+
+    # --- MEDIUM: Key Vault secrets found (informational, worth reviewing)
+    if ($rd.ContainsKey("Key Vault Secrets")) {
+        $secCount = ($rd["Key Vault Secrets"].data | Measure-Object).Count
+        if ($secCount -gt 0) {
+            Add-Finding -severity "INFO" -title "Key Vault secrets accessible" -desc "$secCount secret(s) listed — review values manually" -resource "Key Vaults" -sub $sn
+        }
+    }
+
+    # --- MEDIUM: Disabled users with role assignments
+    if ($rd.ContainsKey("AD Users") -and $rd.ContainsKey("Role Assignments")) {
+        $disabledUsers = $rd["AD Users"].data | Where-Object { "$($_.accountEnabled)" -eq "False" }
+        foreach ($u in $disabledUsers) {
+            $upn = $u.userPrincipalName
+            $hasRole = $rd["Role Assignments"].data | Where-Object { "$($_.principalName)" -eq "$upn" }
+            if ($hasRole) {
+                Add-Finding -severity "MEDIUM" -title "Disabled user has active role assignments" -desc "$upn is disabled but still has role: $($hasRole[0].roleDefinitionName)" -resource $upn -sub $sn
+            }
+        }
+    }
+
+    # --- MEDIUM: Automation accounts with credentials
+    if ($rd.ContainsKey("Automation Accounts")) {
+        foreach ($a in $rd["Automation Accounts"].data) {
+            Add-Finding -severity "INFO" -title "Automation Account found" -desc "Review runbooks in $($a.name) for hardcoded credentials" -resource $a.name -sub $sn
+        }
+    }
+
+    # --- INFO: ACR with admin user enabled
+    if ($rd.ContainsKey("Container Registries")) {
+        foreach ($acr in $rd["Container Registries"].data) {
+            if ("$($acr.adminUserEnabled)" -eq "True" -or "$($acr.adminUserEnabled)" -eq "true") {
+                Add-Finding -severity "MEDIUM" -title "Container Registry has admin user enabled" -desc "$($acr.name) has adminUserEnabled=true — admin credentials may be exposed" -resource $acr.name -sub $sn
+            }
+        }
+    }
+}
+
+Write-Host "  [+] Found $($findings.Count) finding(s)" -ForegroundColor $(if ($findings.Count -gt 0) { "Yellow" } else { "Green" })
+
+# Build findings HTML block
+$sev_order = @{ "HIGH"=0; "MEDIUM"=1; "INFO"=2 }
+$sev_color = @{ "HIGH"="#f85149"; "MEDIUM"="#f0883e"; "INFO"="#58a6ff" }
+$sev_bg    = @{ "HIGH"="#3d1a1a"; "MEDIUM"="#3d2a10"; "INFO"="#0d2139" }
+
+$findings_html = "<div id='findings'><h2>Findings <span class='b'>$($findings.Count)</span></h2>"
+
+if ($findings.Count -eq 0) {
+    $findings_html += "<div style='color:#8b949e;font-size:13px;padding:12px 0'>No findings detected.</div>"
+} else {
+    $sorted = $findings | Sort-Object { $sev_order[$_.severity] }
+    foreach ($f in $sorted) {
+        $col = $sev_color[$f.severity]
+        $bg  = $sev_bg[$f.severity]
+        $findings_html += "<div class='finding' style='border-left:3px solid $col;background:$bg'>"
+        $findings_html += "<div class='f-head'><span class='f-sev' style='color:$col'>$($f.severity)</span><span class='f-title'>$(HtmlEnc $f.title)</span><span class='f-sub'>$($f.sub)</span></div>"
+        $findings_html += "<div class='f-desc'>$(HtmlEnc $f.desc)</div>"
+        $findings_html += "<div class='f-res'>Resource: $(HtmlEnc $f.resource)</div>"
+        $findings_html += "</div>"
+    }
+}
+$findings_html += "</div>"
+
+# Stats bar
+$high_count   = ($findings | Where-Object { $_.severity -eq "HIGH"   } | Measure-Object).Count
+$medium_count = ($findings | Where-Object { $_.severity -eq "MEDIUM" } | Measure-Object).Count
+$info_count   = ($findings | Where-Object { $_.severity -eq "INFO"   } | Measure-Object).Count
+
 # ============================================================
 # BUILD REPORT.HTML
 # ============================================================
@@ -437,12 +613,32 @@ $rh += "td.w{color:#f0883e;font-weight:500}"
 $rh += "#sf{width:100%;padding:7px 12px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;margin-bottom:18px}"
 $rh += "#sf:focus{outline:none;border-color:#58a6ff}"
 $rh += ".hidden{display:none}"
+$rh += "#findings{margin-bottom:32px}"
+$rh += "#findings h2{font-size:15px;font-weight:600;color:#e6edf3;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #30363d}"
+$rh += ".finding{border-radius:6px;padding:12px 14px;margin-bottom:8px}"
+$rh += ".f-head{display:flex;align-items:center;gap:10px;margin-bottom:4px}"
+$rh += ".f-sev{font-size:11px;font-weight:700;letter-spacing:.06em;min-width:50px}"
+$rh += ".f-title{font-size:13px;font-weight:500;color:#e6edf3;flex:1}"
+$rh += ".f-sub{font-size:11px;color:#8b949e}"
+$rh += ".f-desc{font-size:12px;color:#c9d1d9;margin-bottom:3px}"
+$rh += ".f-res{font-size:11px;color:#8b949e}"
+$rh += ".stats{display:flex;gap:10px;margin-bottom:20px}"
+$rh += ".stat{padding:10px 18px;border-radius:8px;min-width:100px}"
+$rh += ".stat .n{font-size:22px;font-weight:700}"
+$rh += ".stat .l{font-size:11px;margin-top:2px}"
 $rh += "</style></head><body>"
 $rh += "<nav id='sb'><div class='logo'><h1>Azure Enum Report</h1><p>$gen_time</p></div>"
 $rh += "<a class='gb' href='graph.html' target='_blank'>Graph View</a>"
+$rh += "<a class='gb' href='#findings' style='background:#a12121;margin-bottom:4px'>Findings ($($findings.Count))</a>"
 $rh += "<ul>$sidebar</ul></nav>"
 $rh += "<main id='main'><div class='ph'><div><h1>Azure Enumeration Report</h1><p>$gen_time</p></div>"
 $rh += "<a class='gb2' href='graph.html' target='_blank'>Graph View</a></div>"
+$rh += "<div class='stats'>"
+$rh += "<div class='stat' style='background:#3d1a1a'><div class='n' style='color:#f85149'>$high_count</div><div class='l' style='color:#f85149'>HIGH</div></div>"
+$rh += "<div class='stat' style='background:#3d2a10'><div class='n' style='color:#f0883e'>$medium_count</div><div class='l' style='color:#f0883e'>MEDIUM</div></div>"
+$rh += "<div class='stat' style='background:#0d2139'><div class='n' style='color:#58a6ff'>$info_count</div><div class='l' style='color:#58a6ff'>INFO</div></div>"
+$rh += "</div>"
+$rh += $findings_html
 $rh += "<input id='sf' type='text' placeholder='Filter tables...' oninput='ft(this.value)'>"
 $rh += $content
 $rh += "</main><script>"
