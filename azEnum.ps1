@@ -511,7 +511,9 @@ foreach ($sn in $report_data.Keys) {
     }
 }
 
-Write-Host "  [+] Found $($findings.Count) finding(s)" -ForegroundColor $(if ($findings.Count -gt 0) { "Yellow" } else { "Green" })
+$fc = $findings.Count
+$fcol = if ($fc -gt 0) { "Yellow" } else { "Green" }
+Write-Host "  [+] Found $fc finding(s)" -ForegroundColor $fcol
 
 # Build findings HTML block
 $sev_order = @{ "HIGH"=0; "MEDIUM"=1; "INFO"=2 }
