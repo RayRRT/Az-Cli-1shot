@@ -7,8 +7,8 @@
 
 $az         = "python -m azure.cli"
 $timestamp  = Get-Date -Format 'yyyyMMdd_HHmmss'
-$output_dir = ".\azure_enum_$timestamp"
-New-Item -ItemType Directory -Path $output_dir | Out-Null
+$output_dir = (Join-Path (Get-Location).Path "azure_enum_$timestamp")
+New-Item -ItemType Directory -Path $output_dir -Force | Out-Null
 
 Add-Type -AssemblyName System.Web
 
@@ -540,7 +540,7 @@ Write-Host "  Folder : $output_dir" -ForegroundColor Yellow
 Write-Host "  Nodes  : $($global:gNodes.Count)  Links: $($global:gLinks.Count)" -ForegroundColor White
 Write-Host "================================================`n" -ForegroundColor Yellow
 
-$report_abs = (Resolve-Path "$output_dir\report.html").Path
+$report_abs = Join-Path $output_dir "report.html"
 Start-Process $report_abs
 
 Get-ChildItem $output_dir | Where-Object { $_.Length -gt 10 } |
