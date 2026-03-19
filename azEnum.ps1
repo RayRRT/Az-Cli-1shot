@@ -478,7 +478,7 @@ foreach ($sn in $report_data.Keys) {
     if ($rd.ContainsKey("Key Vault Secrets")) {
         $secCount = ($rd["Key Vault Secrets"].data | Measure-Object).Count
         if ($secCount -gt 0) {
-            Add-Finding -severity "INFO" -title "Key Vault secrets accessible" -desc "$secCount secret(s) listed — review values manually" -resource "Key Vaults" -sub $sn
+            Add-Finding -severity "INFO" -title "Key Vault secrets accessible" -desc "$secCount secret(s) listed - review values manually" -resource "Key Vaults" -sub $sn
         }
     }
 
@@ -505,7 +505,7 @@ foreach ($sn in $report_data.Keys) {
     if ($rd.ContainsKey("Container Registries")) {
         foreach ($acr in $rd["Container Registries"].data) {
             if ("$($acr.adminUserEnabled)" -eq "True" -or "$($acr.adminUserEnabled)" -eq "true") {
-                Add-Finding -severity "MEDIUM" -title "Container Registry has admin user enabled" -desc "$($acr.name) has adminUserEnabled=true — admin credentials may be exposed" -resource $acr.name -sub $sn
+                Add-Finding -severity "MEDIUM" -title "Container Registry has admin user enabled" -desc "$($acr.name) has adminUserEnabled=true - admin credentials may be exposed" -resource $acr.name -sub $sn
             }
         }
     }
