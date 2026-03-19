@@ -8,10 +8,11 @@ $az = "python -m azure.cli"
 $output_dir = ".\azure_enum_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 New-Item -ItemType Directory -Path $output_dir | Out-Null
 
+# Helper: run an az command silently and save output to file
 function Run-Az {
     param([string]$args_str, [string]$label)
     Write-Host "[*] $label..." -ForegroundColor Cyan
-    $result = Invoke-Expression "$az $args_str 2>$null"
+    $result = (Invoke-Expression "$az $args_str") 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
     if ($result) {
         $result | Out-File "$output_dir\$($label -replace ' ','_').txt"
         return $result
@@ -19,6 +20,16 @@ function Run-Az {
         Write-Host "    [-] No results or insufficient permissions" -ForegroundColor DarkGray
         return $null
     }
+}
+
+# Helper: run az and return parsed JSON, suppressing errors
+function Run-Az-Json {
+    param([string]$args_str)
+    try {
+        $result = (Invoke-Expression "$az $args_str --output json") 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if ($result) { return ($result | ConvertFrom-Json) }
+    } catch {}
+    return @()
 }
 
 Write-Host "`n=====================================================" -ForegroundColor Yellow
@@ -32,7 +43,7 @@ Write-Host "=====================================================`n" -Foreground
 Write-Host "[+] ACCOUNT & SUBSCRIPTIONS" -ForegroundColor Green
 
 Run-Az "account show" "01_account_current"
-$subs = Invoke-Expression "$az account list 2>$null" | ConvertFrom-Json
+$subs = Run-Az-Json "account list"
 $subs | Format-Table name, id, state -AutoSize
 $subs | ConvertTo-Json | Out-File "$output_dir\01_subscriptions.json"
 
@@ -44,7 +55,7 @@ foreach ($sub in $subs) {
     $sub_name = $sub.name -replace '[^\w]', '_'
 
     Write-Host "`n[>>] Subscription: $($sub.name) [$sub_id]" -ForegroundColor Magenta
-    Invoke-Expression "$az account set --subscription $sub_id 2>$null"
+    Invoke-Expression "$az account set --subscription $sub_id" 2>&1 | Out-Null
 
     # --------------------------------------------------------
     # 2. IDENTITY & PERMISSIONS
@@ -77,7 +88,7 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] VIRTUAL MACHINES" -ForegroundColor Green
 
-    $vms = Invoke-Expression "$az vm list --output json 2>$null" | ConvertFrom-Json
+    $vms = Run-Az-Json "vm list"
     $vms | ConvertTo-Json | Out-File "$output_dir\${sub_name}_05_vms.json"
     Run-Az "vm list-ip-addresses --output json" "${sub_name}_05_vm_ips"
 
@@ -85,8 +96,8 @@ foreach ($sub in $subs) {
         $vmname = $vm.name
         $rg = $vm.resourceGroup
         Write-Host "    [vm] $vmname ($rg)" -ForegroundColor DarkCyan
-        Invoke-Expression "$az vm get-instance-view --name $vmname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_05_vm_${vmname}_detail.json"
+        Run-Az-Json "vm get-instance-view --name $vmname --resource-group $rg" |
+            ConvertTo-Json | Out-File "$output_dir\${sub_name}_05_vm_${vmname}_detail.json"
     }
 
     # --------------------------------------------------------
@@ -98,13 +109,12 @@ foreach ($sub in $subs) {
     Run-Az "network public-ip list --output json" "${sub_name}_06_public_ips"
     Run-Az "network nsg list --output json" "${sub_name}_06_nsgs"
 
-    $nsgs = Invoke-Expression "$az network nsg list --output json 2>$null" | ConvertFrom-Json
+    $nsgs = Run-Az-Json "network nsg list"
     foreach ($nsg in $nsgs) {
         $nsgname = $nsg.name
         $rg = $nsg.resourceGroup
         Write-Host "    [nsg] $nsgname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az network nsg rule list --nsg-name $nsgname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_06_nsg_${nsgname}_rules.json"
+        Run-Az "network nsg rule list --nsg-name $nsgname --resource-group $rg --output json" "${sub_name}_06_nsg_${nsgname}_rules"
     }
 
     # --------------------------------------------------------
@@ -112,18 +122,16 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] STORAGE ACCOUNTS" -ForegroundColor Green
 
-    $storages = Invoke-Expression "$az storage account list --output json 2>$null" | ConvertFrom-Json
+    $storages = Run-Az-Json "storage account list"
     $storages | ConvertTo-Json | Out-File "$output_dir\${sub_name}_07_storage_accounts.json"
 
     foreach ($sa in $storages) {
         $saname = $sa.name
         Write-Host "    [storage] $saname" -ForegroundColor DarkCyan
         # Try to list containers
-        Invoke-Expression "$az storage container list --account-name $saname --auth-mode login --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_07_storage_${saname}_containers.json"
+        Run-Az "storage container list --account-name $saname --auth-mode login --output json" "${sub_name}_07_storage_${saname}_containers"
         # Check public access setting
-        Invoke-Expression "$az storage account show --name $saname --query 'allowBlobPublicAccess' --output tsv 2>$null" |
-            Out-File "$output_dir\${sub_name}_07_storage_${saname}_publicaccess.txt"
+        Run-Az "storage account show --name $saname --query allowBlobPublicAccess --output tsv" "${sub_name}_07_storage_${saname}_publicaccess"
     }
 
     # --------------------------------------------------------
@@ -131,18 +139,15 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] KEY VAULTS" -ForegroundColor Green
 
-    $vaults = Invoke-Expression "$az keyvault list --output json 2>$null" | ConvertFrom-Json
+    $vaults = Run-Az-Json "keyvault list"
     $vaults | ConvertTo-Json | Out-File "$output_dir\${sub_name}_08_keyvaults.json"
 
     foreach ($vault in $vaults) {
         $vname = $vault.name
         Write-Host "    [vault] $vname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az keyvault secret list --vault-name $vname --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_08_vault_${vname}_secrets.json"
-        Invoke-Expression "$az keyvault key list --vault-name $vname --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_08_vault_${vname}_keys.json"
-        Invoke-Expression "$az keyvault certificate list --vault-name $vname --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_08_vault_${vname}_certs.json"
+        Run-Az "keyvault secret list --vault-name $vname --output json" "${sub_name}_08_vault_${vname}_secrets"
+        Run-Az "keyvault key list --vault-name $vname --output json" "${sub_name}_08_vault_${vname}_keys"
+        Run-Az "keyvault certificate list --vault-name $vname --output json" "${sub_name}_08_vault_${vname}_certs"
     }
 
     # --------------------------------------------------------
@@ -150,28 +155,25 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] WEB APPS & FUNCTIONS" -ForegroundColor Green
 
-    $webapps = Invoke-Expression "$az webapp list --output json 2>$null" | ConvertFrom-Json
+    $webapps = Run-Az-Json "webapp list"
     $webapps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_09_webapps.json"
 
     foreach ($app in $webapps) {
         $appname = $app.name
         $rg = $app.resourceGroup
         Write-Host "    [webapp] $appname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az webapp config appsettings list --name $appname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_09_webapp_${appname}_appsettings.json"
-        Invoke-Expression "$az webapp config connection-string list --name $appname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_09_webapp_${appname}_connstrings.json"
+        Run-Az "webapp config appsettings list --name $appname --resource-group $rg --output json" "${sub_name}_09_webapp_${appname}_appsettings"
+        Run-Az "webapp config connection-string list --name $appname --resource-group $rg --output json" "${sub_name}_09_webapp_${appname}_connstrings"
     }
 
-    $funcapps = Invoke-Expression "$az functionapp list --output json 2>$null" | ConvertFrom-Json
+    $funcapps = Run-Az-Json "functionapp list"
     $funcapps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_09_functionapps.json"
 
     foreach ($func in $funcapps) {
         $fname = $func.name
         $rg = $func.resourceGroup
         Write-Host "    [func] $fname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az functionapp config appsettings list --name $fname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_09_func_${fname}_appsettings.json"
+        Run-Az "functionapp config appsettings list --name $fname --resource-group $rg --output json" "${sub_name}_09_func_${fname}_appsettings"
     }
 
     # --------------------------------------------------------
@@ -179,17 +181,15 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] SQL SERVERS" -ForegroundColor Green
 
-    $sqlservers = Invoke-Expression "$az sql server list --output json 2>$null" | ConvertFrom-Json
+    $sqlservers = Run-Az-Json "sql server list"
     $sqlservers | ConvertTo-Json | Out-File "$output_dir\${sub_name}_10_sql_servers.json"
 
     foreach ($srv in $sqlservers) {
         $srvname = $srv.name
         $rg = $srv.resourceGroup
         Write-Host "    [sql] $srvname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az sql db list --server $srvname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_10_sql_${srvname}_dbs.json"
-        Invoke-Expression "$az sql server firewall-rule list --server $srvname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_10_sql_${srvname}_firewall.json"
+        Run-Az "sql db list --server $srvname --resource-group $rg --output json" "${sub_name}_10_sql_${srvname}_dbs"
+        Run-Az "sql server firewall-rule list --server $srvname --resource-group $rg --output json" "${sub_name}_10_sql_${srvname}_firewall"
     }
 
     # --------------------------------------------------------
@@ -197,17 +197,15 @@ foreach ($sub in $subs) {
     # --------------------------------------------------------
     Write-Host "  [+] AUTOMATION ACCOUNTS" -ForegroundColor Green
 
-    $automations = Invoke-Expression "$az automation account list --output json 2>$null" | ConvertFrom-Json
+    $automations = Run-Az-Json "automation account list"
     $automations | ConvertTo-Json | Out-File "$output_dir\${sub_name}_11_automation_accounts.json"
 
     foreach ($auto in $automations) {
         $autoname = $auto.name
         $rg = $auto.resourceGroup
         Write-Host "    [automation] $autoname" -ForegroundColor DarkCyan
-        Invoke-Expression "$az automation runbook list --automation-account-name $autoname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_11_auto_${autoname}_runbooks.json"
-        Invoke-Expression "$az automation credential list --automation-account-name $autoname --resource-group $rg --output json 2>$null" |
-            Out-File "$output_dir\${sub_name}_11_auto_${autoname}_credentials.json"
+        Run-Az "automation runbook list --automation-account-name $autoname --resource-group $rg --output json" "${sub_name}_11_auto_${autoname}_runbooks"
+        Run-Az "automation credential list --automation-account-name $autoname --resource-group $rg --output json" "${sub_name}_11_auto_${autoname}_credentials"
     }
 
     # --------------------------------------------------------
@@ -229,6 +227,6 @@ Write-Host "=====================================================`n" -Foreground
 
 # List files with actual content (non-empty)
 Write-Host "[+] Files with data:" -ForegroundColor Green
-Get-ChildItem $output_dir | Where-Object { $_.Length -gt 10 } | 
-    Select-Object Name, @{N='Size';E={"{0:N0} bytes" -f $_.Length}} | 
+Get-ChildItem $output_dir | Where-Object { $_.Length -gt 10 } |
+    Select-Object Name, @{N='Size';E={"{0:N0} bytes" -f $_.Length}} |
     Format-Table -AutoSize
