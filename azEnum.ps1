@@ -1,11 +1,18 @@
 # ============================================================
 #  Azure Enumeration Script  -  Single file version
 #  Usage: .\azure_enum.ps1
-#  Requires: python -m azure.cli (already logged in)
+#  Requires: az CLI (native) OR python -m azure.cli (already logged in)
 #  Output:   <output_dir>\report.html  +  graph.html
 # ============================================================
 
-$az         = "python -m azure.cli"
+# Auto-detect: use native az if available, otherwise fall back to python module
+if (Get-Command az -ErrorAction SilentlyContinue) {
+    $az = "az"
+    Write-Host "[*] Using native az CLI" -ForegroundColor DarkGray
+} else {
+    $az = "python -m azure.cli"
+    Write-Host "[*] Using python -m azure.cli" -ForegroundColor DarkGray
+}
 $timestamp  = Get-Date -Format 'yyyyMMdd_HHmmss'
 $output_dir = (Join-Path (Get-Location).Path "azure_enum_$timestamp")
 New-Item -ItemType Directory -Path $output_dir -Force | Out-Null
@@ -23,10 +30,32 @@ $global:gNodeIds = @{}
 
 function Run-Az-Json {
     param([string]$cmd)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # Show a spinner with elapsed time while waiting for slow commands
+    $job = Start-Job -ScriptBlock {
+        param($az, $cmd)
+        try {
+            $r = (Invoke-Expression "$az $cmd --output json") 2>&1 |
+                 Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+            if ($r) { return $r }
+        } catch {}
+        return $null
+    } -ArgumentList $script:az, $cmd
+
+    $spinner = @('|','/','-','\')
+    $i = 0
+    while ($job.State -eq 'Running') {
+        $elapsed = $sw.Elapsed.ToString("mm\:ss")
+        Write-Host "`r    $($spinner[$i % 4]) running... ($elapsed elapsed)" -NoNewline -ForegroundColor DarkGray
+        Start-Sleep -Milliseconds 500
+        $i++
+    }
+    Write-Host "`r    done in $($sw.Elapsed.ToString('mm\:ss'))              " -ForegroundColor DarkGray
+
     try {
-        $r = (Invoke-Expression "$script:az $cmd --output json") 2>&1 |
-             Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-        if ($r) { return ($r | ConvertFrom-Json) }
+        $raw = Receive-Job $job
+        Remove-Job $job
+        if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
     return @()
 }
@@ -146,8 +175,16 @@ foreach ($sub in $subs) {
         }
     }
 
-    $sps = Run-Az-Json "ad sp list --all"
-    $sps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_sps.json"
+    # Service Principals - use -SkipSlowAD to skip, -NoSPAll to run without --all
+    if ($SkipSlowAD) {
+        Write-Host "  [!] Skipping SP list (-SkipSlowAD)" -ForegroundColor DarkYellow
+        $sps = @()
+    } else {
+        $spFlag = if ($NoSPAll) { "ad sp list --all" } else { "ad sp list" }
+        Write-Host "  [+] SERVICE PRINCIPALS ($spFlag) - this may take a while..." -ForegroundColor Green
+        $sps = Run-Az-Json $spFlag
+        $sps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_sps.json"
+    }
     $rd["Service Principals"] = @{ data=$sps; fields=@("displayName","appId","servicePrincipalType") }
     foreach ($sp in $sps) {
         $spid = "sp_" + ($sp.appId -replace '\W','_')
@@ -155,8 +192,16 @@ foreach ($sub in $subs) {
         GLink -src $sub_nid -tgt $spid -rel "contains"
     }
 
-    $apps = Run-Az-Json "ad app list --all"
-    $apps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_apps.json"
+    # App Registrations - use -SkipSlowAD to skip, -NoSPAll to run without --all
+    if ($SkipSlowAD) {
+        Write-Host "  [!] Skipping App list (-SkipSlowAD)" -ForegroundColor DarkYellow
+        $apps = @()
+    } else {
+        $appFlag = if ($NoSPAll) { "ad app list --all" } else { "ad app list" }
+        Write-Host "  [+] APP REGISTRATIONS ($appFlag) - this may take a while..." -ForegroundColor Green
+        $apps = Run-Az-Json $appFlag
+        $apps | ConvertTo-Json | Out-File "$output_dir\${sub_name}_apps.json"
+    }
     $rd["App Registrations"] = @{ data=$apps; fields=@("displayName","appId","signInAudience") }
 
     # RESOURCE GROUPS
