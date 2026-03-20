@@ -1,8 +1,0 @@
-1..254 | ForEach-Object {
-    $ip = "10.140.8.$_"
-    foreach ($port in 80,443) {
-        if (Test-NetConnection -ComputerName $ip -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded {
-            "$ip : puerto $port ABIERTO"
-        }
-    }
-}
