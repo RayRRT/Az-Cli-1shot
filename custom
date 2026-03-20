@@ -1,12 +1,8 @@
-1..254 | ForEach-Object -Parallel {
-    $ip = "00.000.0.$_"
+1..254 | ForEach-Object {
+    $ip = "10.140.8.$_"
     foreach ($port in 80,443) {
-        try {
-            $tcp = [System.Net.Sockets.TcpClient]::new()
-            if ($tcp.ConnectAsync($ip, $port).Wait(200) -and $tcp.Connected) {
-                "$ip : port $port OPEN"
-            }
-            $tcp.Dispose()
-        } catch {}
+        if (Test-NetConnection -ComputerName $ip -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded {
+            "$ip : puerto $port ABIERTO"
+        }
     }
-} -ThrottleLimit 50
+}
